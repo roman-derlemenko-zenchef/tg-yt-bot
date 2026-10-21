@@ -11,7 +11,7 @@ variable "region" {
 }
 
 variable "github_repo" {
-  description = "GitHub repository holding this folder, as \"owner/name\". DigitalOcean's GitHub app must have access to it."
+  description = "Public GitHub repository holding this folder, as \"owner/name\"."
   type        = string
 
   validation {
@@ -21,7 +21,7 @@ variable "github_repo" {
 }
 
 variable "github_branch" {
-  description = "Branch to deploy. Every push to it redeploys the function."
+  description = "Branch to deploy."
   type        = string
   default     = "main"
 }

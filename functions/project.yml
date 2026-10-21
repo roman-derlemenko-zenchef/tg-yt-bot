@@ -1,6 +1,7 @@
 # DigitalOcean Functions project, deployed as the "bot" function component of
-# the App Platform app defined in ../main.tf. The ${...} values are App
-# Platform environment variables, substituted at build time.
+# the App Platform app defined in ../main.tf. The environment values below are
+# App Platform environment variables, substituted at build time. (App Platform
+# treats every dollar-brace reference in this file as one, comments included.)
 packages:
   - name: tg
     functions:

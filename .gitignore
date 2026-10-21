@@ -14,3 +14,4 @@ crash.log
 functions/packages/tg/bot/virtualenv/
 functions/packages/tg/bot/bin/
 __pycache__/
+tfplan

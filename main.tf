@@ -27,10 +27,11 @@ resource "digitalocean_app" "bot" {
       name       = "bot"
       source_dir = "functions"
 
-      github {
-        repo           = var.github_repo
+      # The repo is public, so App Platform clones it without GitHub
+      # authorization. A push doesn't redeploy by itself; see README.
+      git {
+        repo_clone_url = "https://github.com/${var.github_repo}.git"
         branch         = var.github_branch
-        deploy_on_push = true
       }
 
       # project.yml substitutes these at build time, so they are needed in
