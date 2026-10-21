@@ -61,11 +61,14 @@ def main(event, context):
 
     # From here on, always answer 200: anything else makes Telegram resend the
     # update, which would start the same download again.
+    outcomes = []
     try:
-        handle_message(event.get("message") or {}, self_url(context, headers))
+        outcomes = handle_message(event.get("message") or {}, self_url(context, headers))
     except Exception as e:  # noqa: BLE001
         print(f"webhook failed: {e!r}")
-    return {"statusCode": 200, "body": ""}
+        outcomes = [f"error: {e!r}"]
+    # Telegram ignores the response; the header is for debugging by hand.
+    return {"statusCode": 200, "body": "", "headers": {"X-Job-Handoff": "; ".join(outcomes)[:500]}}
 
 
 def secret_matches(got, secret):
@@ -73,28 +76,33 @@ def secret_matches(got, secret):
 
 
 def handle_message(msg, url_of_self):
+    """Returns one line per link saying how its job was started."""
     chat_id = (msg.get("chat") or {}).get("id")
     from_id = (msg.get("from") or {}).get("id")
     if chat_id not in ALLOWED_CHAT_IDS or from_id not in ALLOWED_CHAT_IDS:
         print(f"ignored message from {from_id} in chat {chat_id}")
-        return
+        return ["ignored"]
 
     text = msg.get("text") or msg.get("caption") or ""
     urls = youtube_urls(text)
     if not urls:
         telegram.send_message(chat_id, HELP)
-        return
+        return ["help"]
 
+    outcomes = []
     for url in urls:
         status_id = telegram.send_message(chat_id, f'🎵 <a href="{html.escape(url)}">YouTube link</a>\n\n⏳ Starting…')
         task = {"chat_id": chat_id, "url": url, "status_id": status_id, "reply_to": msg.get("message_id")}
         try:
             start_job(url_of_self, task)
+            outcomes.append(f"started via {url_of_self}")
         except Exception as e:  # noqa: BLE001
             # The download then runs inside the webhook call. Fine for most
             # videos; a slow one risks Telegram resending the update.
             print(f"job hand-off failed ({e!r}), running inline")
+            outcomes.append(f"inline, hand-off to {url_of_self} failed: {e!r}")
             job.run(task)
+    return outcomes
 
 
 def youtube_urls(text):
