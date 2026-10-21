@@ -6,6 +6,7 @@ They stub out Telegram and yt-dlp, so they need neither network nor
 dependencies installed (yt_dlp and requests are replaced with stand-ins).
 """
 
+import importlib.util
 import os
 import sys
 import types
@@ -20,9 +21,10 @@ for name in ("yt_dlp", "yt_dlp.utils", "requests"):
     sys.modules.setdefault(name, types.ModuleType(name))
 sys.modules["yt_dlp"].utils = sys.modules["yt_dlp.utils"]
 sys.modules["yt_dlp.utils"].DownloadError = type("DownloadError", (Exception,), {})
-sys.modules["requests"].RequestException = type("RequestException", (Exception,), {})
-
-import importlib.util  # noqa: E402
+fake_requests = sys.modules["requests"]
+fake_requests.RequestException = type("RequestException", (Exception,), {})
+fake_requests.ReadTimeout = type("ReadTimeout", (fake_requests.RequestException,), {})
+fake_requests.post = None
 
 
 def load_main():
@@ -37,6 +39,7 @@ bot = load_main()
 
 OWNER = 168370115
 SECRET = "s3cret"
+SELF_URL = "https://faas-fra1-example.doserverless.co/api/v1/web/fn-abc/tg/bot"
 
 
 def web_event(message, secret=SECRET):
@@ -47,13 +50,16 @@ def web_event(message, secret=SECRET):
     }
 
 
+def job_event(task, secret=SECRET):
+    return {"http": {"headers": {"x-bot-job-secret": secret}, "method": "POST"}, "job": task}
+
+
 def message(text, chat_id=OWNER, from_id=OWNER):
     return {"message_id": 10, "chat": {"id": chat_id}, "from": {"id": from_id}, "text": text}
 
 
 class Context:
     api_host = "https://faas-fra1-example.doserverless.co"
-    api_key = "user:pass"
     function_name = "/fn-abc/tg/bot"
 
 
@@ -61,62 +67,90 @@ class Context:
 class WebhookTest(unittest.TestCase):
     def setUp(self):
         self.send = mock.patch.object(bot.telegram, "send_message", return_value=99).start()
-        self.start_async = mock.patch.object(bot, "start_async").start()
+        self.start_job = mock.patch.object(bot, "start_job").start()
         self.run_job = mock.patch.object(bot.job, "run").start()
         self.addCleanup(mock.patch.stopall)
 
     def test_rejects_wrong_secret(self):
         resp = bot.main(web_event(message("https://youtu.be/dQw4w9WgXcQ"), secret="nope"), Context())
         self.assertEqual(resp["statusCode"], 401)
-        self.start_async.assert_not_called()
+        self.start_job.assert_not_called()
 
     def test_ignores_other_users(self):
         resp = bot.main(web_event(message("https://youtu.be/dQw4w9WgXcQ", chat_id=1, from_id=1)), Context())
         self.assertEqual(resp["statusCode"], 200)
         self.send.assert_not_called()
-        self.start_async.assert_not_called()
+        self.start_job.assert_not_called()
 
-    def test_starts_async_job_for_link(self):
+    def test_hands_off_job_for_link(self):
         resp = bot.main(web_event(message("look https://youtu.be/dQw4w9WgXcQ?si=x")), Context())
         self.assertEqual(resp["statusCode"], 200)
-        task = self.start_async.call_args.args[1]
+        url, task = self.start_job.call_args.args
+        self.assertEqual(url, SELF_URL)
         self.assertEqual(task, {"chat_id": OWNER, "url": "https://youtu.be/dQw4w9WgXcQ?si=x",
                                 "status_id": 99, "reply_to": 10})
         self.run_job.assert_not_called()
 
     def test_falls_back_to_inline_job(self):
-        self.start_async.side_effect = RuntimeError("no key")
+        self.start_job.side_effect = RuntimeError("unreachable")
         bot.main(web_event(message("https://youtu.be/dQw4w9WgXcQ")), Context())
         self.run_job.assert_called_once()
 
     def test_help_without_link(self):
         bot.main(web_event(message("/start")), Context())
         self.assertIn("YouTube link", self.send.call_args.args[1])
-        self.start_async.assert_not_called()
+        self.start_job.assert_not_called()
 
     def test_errors_still_return_200(self):
         self.send.side_effect = Exception("telegram down")
         resp = bot.main(web_event(message("https://youtu.be/dQw4w9WgXcQ")), Context())
         self.assertEqual(resp["statusCode"], 200)
 
-    def test_job_parameter_from_web_is_not_a_job(self):
+    def test_job_request_runs_job(self):
+        task = {"chat_id": OWNER, "url": "https://youtu.be/dQw4w9WgXcQ"}
+        resp = bot.main(job_event(task), Context())
+        self.assertEqual(resp["statusCode"], 200)
+        self.run_job.assert_called_once_with(task)
+
+    def test_job_request_needs_secret(self):
+        resp = bot.main(job_event({"chat_id": OWNER, "url": "u"}, secret="nope"), Context())
+        self.assertEqual(resp["statusCode"], 401)
+        self.run_job.assert_not_called()
+
+    def test_job_request_only_for_allowed_chats(self):
+        resp = bot.main(job_event({"chat_id": 1, "url": "u"}), Context())
+        self.assertEqual(resp["statusCode"], 403)
+        self.run_job.assert_not_called()
+
+    def test_job_in_telegram_update_is_ignored(self):
         event = web_event(message("hi"))
-        event["job"] = {"chat_id": 1, "url": "https://youtu.be/dQw4w9WgXcQ"}
+        event["job"] = {"chat_id": OWNER, "url": "https://youtu.be/dQw4w9WgXcQ"}
         bot.main(event, Context())
         self.run_job.assert_not_called()
 
 
-class StartAsyncTest(unittest.TestCase):
-    def test_invokes_itself_non_blocking(self):
-        fake = mock.MagicMock()
-        fake.__enter__.return_value.read.return_value = b'{"activationId": "a1"}'
-        with mock.patch.object(bot.urllib.request, "urlopen", return_value=fake) as urlopen, \
-                mock.patch.object(bot.json, "load", return_value={"activationId": "a1"}):
-            bot.start_async(Context(), {"url": "u"})
-        req = urlopen.call_args.args[0]
-        self.assertEqual(req.full_url,
-                         "https://faas-fra1-example.doserverless.co/api/v1/namespaces/fn-abc/actions/tg/bot?blocking=false")
-        self.assertEqual(req.get_header("Authorization"), "Basic dXNlcjpwYXNz")
+@mock.patch.dict(os.environ, {"WEBHOOK_SECRET": SECRET})
+class StartJobTest(unittest.TestCase):
+    def test_hangs_up_after_handoff(self):
+        with mock.patch.object(bot.requests, "post", side_effect=bot.requests.ReadTimeout()) as post:
+            bot.start_job(SELF_URL, {"url": "u"})
+        self.assertEqual(post.call_args.kwargs["headers"], {"x-bot-job-secret": SECRET})
+        self.assertEqual(post.call_args.kwargs["json"], {"job": {"url": "u"}})
+
+    def test_fast_answer_is_a_failure(self):
+        resp = mock.Mock(status_code=404, text="not found")
+        with mock.patch.object(bot.requests, "post", return_value=resp):
+            with self.assertRaises(RuntimeError):
+                bot.start_job(SELF_URL, {"url": "u"})
+
+
+class SelfURLTest(unittest.TestCase):
+    def test_from_context(self):
+        self.assertEqual(bot.self_url(Context(), {}), SELF_URL)
+
+    def test_from_forwarded_host(self):
+        url = bot.self_url(object(), {"x-forwarded-host": "tg-yt-bot-abc.ondigitalocean.app"})
+        self.assertEqual(url, "https://tg-yt-bot-abc.ondigitalocean.app/api/tg/bot")
 
 
 class YouTubeURLsTest(unittest.TestCase):

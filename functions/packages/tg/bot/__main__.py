@@ -1,22 +1,23 @@
 """Telegram bot that sends back the audio of YouTube links.
 
-Runs as one DigitalOcean Function with two entry paths:
+Runs as one DigitalOcean web function that is called in two ways:
 
-- Web invocation (Telegram's webhook, event has an "http" key): checks the
-  webhook secret and the sender, posts a status message and starts a download
-  job by invoking this same function asynchronously, then returns at once so
-  Telegram doesn't time out and retry.
-- Non-web invocation with a "job" parameter: does the download. Only reachable
-  through the authenticated Functions API, never from the public URL.
+- By Telegram's webhook (X-Telegram-Bot-Api-Secret-Token header): checks the
+  secret and the sender, posts a status message, starts a download job and
+  returns at once, so Telegram doesn't time out and resend the update.
+- By itself, to run a job (X-Bot-Job-Secret header, "job" in the body). The
+  webhook call fires this request and hangs up after a moment: Functions keeps
+  running an invocation after its caller disconnects, up to the function's
+  15-minute limit. App Platform doesn't allow giving a function an API key, so
+  the Functions API's own async invocation isn't available.
 """
 
-import base64
 import hmac
 import html
-import json
 import os
 import re
-import urllib.request
+
+import requests
 
 import job
 import telegram
@@ -33,33 +34,45 @@ YOUTUBE_URL = re.compile(
 
 HELP = "🎵 Send me a YouTube link (video, short, youtu.be or YouTube Music) and I'll send back its audio."
 
+JOB_HEADER = "x-bot-job-secret"
+# How long the webhook call waits on the job request before hanging up. Long
+# enough for the request to be delivered, short enough for Telegram.
+JOB_HANDOFF_WAIT = 2
+
 
 def main(event, context):
-    if "http" in event:
-        return webhook(event, context)
-    if "job" in event:
-        job.run(event["job"])
-        return {"body": "done"}
-    return {"statusCode": 400, "body": "bad request"}
-
-
-def webhook(event, context):
-    headers = event["http"].get("headers") or {}
+    http = event.get("http")
+    if not http:
+        return {"statusCode": 400, "body": "web calls only"}
+    headers = http.get("headers") or {}
     secret = os.environ.get("WEBHOOK_SECRET", "")
-    got = headers.get("x-telegram-bot-api-secret-token", "")
-    if not secret or not hmac.compare_digest(got, secret):
+    if not secret:
+        return {"statusCode": 500, "body": "not configured"}
+
+    if secret_matches(headers.get(JOB_HEADER), secret):
+        task = event.get("job") or {}
+        if task.get("chat_id") not in ALLOWED_CHAT_IDS:
+            return {"statusCode": 403, "body": "forbidden"}
+        job.run(task)
+        return {"statusCode": 200, "body": "done"}
+
+    if not secret_matches(headers.get("x-telegram-bot-api-secret-token"), secret):
         return {"statusCode": 401, "body": "unauthorized"}
 
     # From here on, always answer 200: anything else makes Telegram resend the
     # update, which would start the same download again.
     try:
-        handle_message(event.get("message") or {}, context)
+        handle_message(event.get("message") or {}, self_url(context, headers))
     except Exception as e:  # noqa: BLE001
         print(f"webhook failed: {e!r}")
     return {"statusCode": 200, "body": ""}
 
 
-def handle_message(msg, context):
+def secret_matches(got, secret):
+    return bool(got) and hmac.compare_digest(got, secret)
+
+
+def handle_message(msg, url_of_self):
     chat_id = (msg.get("chat") or {}).get("id")
     from_id = (msg.get("from") or {}).get("id")
     if chat_id not in ALLOWED_CHAT_IDS or from_id not in ALLOWED_CHAT_IDS:
@@ -76,11 +89,11 @@ def handle_message(msg, context):
         status_id = telegram.send_message(chat_id, f'🎵 <a href="{html.escape(url)}">YouTube link</a>\n\n⏳ Starting…')
         task = {"chat_id": chat_id, "url": url, "status_id": status_id, "reply_to": msg.get("message_id")}
         try:
-            start_async(context, task)
+            start_job(url_of_self, task)
         except Exception as e:  # noqa: BLE001
-            # Without async invocation the download runs inside the webhook
-            # call. Fine for most videos; a slow one risks Telegram retrying.
-            print(f"async invoke unavailable ({e!r}), running inline")
+            # The download then runs inside the webhook call. Fine for most
+            # videos; a slow one risks Telegram resending the update.
+            print(f"job hand-off failed ({e!r}), running inline")
             job.run(task)
 
 
@@ -89,29 +102,33 @@ def youtube_urls(text):
     return [u if u.lower().startswith("http") else "https://" + u for u in urls]
 
 
-def start_async(context, task):
-    """Invokes this function again, non-blocking, through the Functions REST
-    API. The API key is only in the context because project.yml sets the
-    provide-api-key annotation."""
+def self_url(context, headers):
+    """This function's public web URL, from the invocation context. The
+    "/<namespace>/<package>/<function>" name maps onto the Functions web API."""
     api_host = getattr(context, "api_host", None) or os.environ.get("__OW_API_HOST")
-    api_key = getattr(context, "api_key", None) or os.environ.get("__OW_API_KEY")
     name = getattr(context, "function_name", None) or os.environ.get("__OW_ACTION_NAME")
-    if not (api_host and api_key and name):
-        raise RuntimeError("no API host/key in the invocation context")
-    if not api_host.startswith("http"):
-        api_host = "https://" + api_host
+    if api_host and name:
+        if not api_host.startswith("http"):
+            api_host = "https://" + api_host
+        return f"{api_host}/api/v1/web/{name.strip('/')}"
+    # App Platform's route, if the context doesn't say.
+    host = headers.get("x-forwarded-host") or headers.get("host")
+    return f"https://{host}/api/tg/bot" if host else None
 
-    # name is "/<namespace>/<package>/<function>".
-    namespace, _, action = name.strip("/").partition("/")
-    url = f"{api_host}/api/v1/namespaces/{namespace}/actions/{action}?blocking=false"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps({"job": task}).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": "Basic " + base64.b64encode(api_key.encode()).decode(),
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        print(f"started download {json.load(resp).get('activationId')} for {task['url']}")
+
+def start_job(url, task):
+    """Sends the job to this function and hangs up without waiting for it."""
+    if not url:
+        raise RuntimeError("own URL unknown")
+    try:
+        resp = requests.post(
+            url,
+            json={"job": task},
+            headers={JOB_HEADER: os.environ["WEBHOOK_SECRET"]},
+            timeout=(5, JOB_HANDOFF_WAIT),  # (connect, read)
+        )
+    except requests.ReadTimeout:
+        print(f"started download of {task['url']} via {url}")
+        return
+    # An answer this fast means the job didn't run (or failed immediately).
+    raise RuntimeError(f"job request returned {resp.status_code}: {resp.text[:200]}")

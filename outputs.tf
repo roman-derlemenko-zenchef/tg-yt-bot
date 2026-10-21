@@ -1,3 +1,8 @@
+output "app_id" {
+  description = "App Platform app ID, for redeploys."
+  value       = digitalocean_app.bot.id
+}
+
 output "app_url" {
   description = "Live URL of the App Platform app."
   value       = digitalocean_app.bot.live_url
