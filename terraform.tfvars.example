@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+github_repo        = "your-github-user/tg-yt-bot"
+telegram_bot_token = "123456789:replace-me"
+
+# Optional, defaults shown:
+# github_branch = "main"
+# region        = "fra"
+# project_id    = "9a0395e2-1f89-45c4-a3b3-1e1a14a6c909"

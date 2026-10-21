@@ -1,0 +1,16 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.auto.tfvars
+
+# Credentials
+*.key
+.env
+crash.log
+
+# Function build output
+functions/packages/tg/bot/virtualenv/
+functions/packages/tg/bot/bin/
+__pycache__/

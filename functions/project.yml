@@ -1,0 +1,19 @@
+# DigitalOcean Functions project, deployed as the "bot" function component of
+# the App Platform app defined in ../main.tf. The ${...} values are App
+# Platform environment variables, substituted at build time.
+packages:
+  - name: tg
+    functions:
+      - name: bot
+        runtime: python:3.12
+        web: true
+        limits:
+          timeout: 900000 # 15 min, the maximum; only the download invocation runs long
+          memory: 1024 # MB; yt-dlp peaks around 300 MB
+        annotations:
+          # Puts this namespace's API key in the invocation context so the
+          # webhook invocation can start the download asynchronously.
+          provide-api-key: true
+        environment:
+          TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
+          WEBHOOK_SECRET: "${WEBHOOK_SECRET}"

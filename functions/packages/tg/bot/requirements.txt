@@ -1,0 +1,4 @@
+# Unpinned on purpose: YouTube changes often and only the latest yt-dlp keeps
+# up. Every deploy (push to the tracked branch) picks up the newest release.
+yt-dlp[default]
+requests
