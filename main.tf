@@ -48,6 +48,13 @@ resource "digitalocean_app" "bot" {
         type  = "SECRET"
         scope = "RUN_AND_BUILD_TIME"
       }
+      # App Platform's bindable variable for the app's live URL; the function
+      # sends download jobs to itself there.
+      env {
+        key   = "APP_URL"
+        value = "$${APP_URL}"
+        scope = "RUN_AND_BUILD_TIME"
+      }
     }
 
     ingress {

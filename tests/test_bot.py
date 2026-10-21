@@ -39,7 +39,7 @@ bot = load_main()
 
 OWNER = 168370115
 SECRET = "s3cret"
-SELF_URL = "https://faas-fra1-example.doserverless.co/api/v1/web/fn-abc/tg/bot"
+SELF_URL = "https://tg-yt-bot-abc.ondigitalocean.app/api/tg/bot"
 
 
 def web_event(message, secret=SECRET):
@@ -59,11 +59,10 @@ def message(text, chat_id=OWNER, from_id=OWNER):
 
 
 class Context:
-    api_host = "https://faas-fra1-example.doserverless.co"
-    function_name = "/fn-abc/tg/bot"
+    pass
 
 
-@mock.patch.dict(os.environ, {"WEBHOOK_SECRET": SECRET})
+@mock.patch.dict(os.environ, {"WEBHOOK_SECRET": SECRET, "APP_URL": "https://tg-yt-bot-abc.ondigitalocean.app"})
 class WebhookTest(unittest.TestCase):
     def setUp(self):
         self.send = mock.patch.object(bot.telegram, "send_message", return_value=99).start()
@@ -145,12 +144,14 @@ class StartJobTest(unittest.TestCase):
 
 
 class SelfURLTest(unittest.TestCase):
-    def test_from_context(self):
-        self.assertEqual(bot.self_url(Context(), {}), SELF_URL)
+    @mock.patch.dict(os.environ, {"APP_URL": "https://tg-yt-bot-abc.ondigitalocean.app/"})
+    def test_from_app_url(self):
+        self.assertEqual(bot.self_url(Context(), {"host": "other.example"}), SELF_URL)
 
-    def test_from_forwarded_host(self):
-        url = bot.self_url(object(), {"x-forwarded-host": "tg-yt-bot-abc.ondigitalocean.app"})
-        self.assertEqual(url, "https://tg-yt-bot-abc.ondigitalocean.app/api/tg/bot")
+    @mock.patch.dict(os.environ, {"APP_URL": "${APP_URL}"})
+    def test_from_forwarded_host_when_app_url_unresolved(self):
+        url = bot.self_url(Context(), {"x-forwarded-host": "tg-yt-bot-abc.ondigitalocean.app"})
+        self.assertEqual(url, SELF_URL)
 
 
 class YouTubeURLsTest(unittest.TestCase):

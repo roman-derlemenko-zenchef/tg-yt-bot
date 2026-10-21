@@ -110,18 +110,20 @@ def youtube_urls(text):
     return [u if u.lower().startswith("http") else "https://" + u for u in urls]
 
 
+# Where App Platform serves this function: the ingress route in main.tf plus
+# "/<package>/<function>" from project.yml. (The function's own Functions web
+# URL, on doserverless.co, returns 404 for App Platform functions.)
+ROUTE = "/api/tg/bot"
+
+
 def self_url(context, headers):
-    """This function's public web URL, from the invocation context. The
-    "/<namespace>/<package>/<function>" name maps onto the Functions web API."""
-    api_host = getattr(context, "api_host", None) or os.environ.get("__OW_API_HOST")
-    name = getattr(context, "function_name", None) or os.environ.get("__OW_ACTION_NAME")
-    if api_host and name:
-        if not api_host.startswith("http"):
-            api_host = "https://" + api_host
-        return f"{api_host}/api/v1/web/{name.strip('/')}"
-    # App Platform's route, if the context doesn't say.
+    """This function's public URL, from the app's live URL (APP_URL, set by
+    App Platform) or else the host the webhook call came in on."""
+    app_url = os.environ.get("APP_URL", "")
+    if app_url.startswith("https://"):
+        return app_url.rstrip("/") + ROUTE
     host = headers.get("x-forwarded-host") or headers.get("host")
-    return f"https://{host}/api/tg/bot" if host else None
+    return f"https://{host}{ROUTE}" if host else None
 
 
 def start_job(url, task):
